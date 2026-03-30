@@ -18,27 +18,9 @@ All outputs land in `./access_output/` with script-prefixed filenames. For redun
 
 While not technically an accessibility too, **harmony.py** is included here for completeness, since I often go back and forth with it and **colors.py** when deciding color schemes.
 
-## Installation
-
-```bash
-# clone repository
-git clone https://github.com/deltaquebec/accessibility.git
-cd accessibility
-
-# core dependencies
-pip install requests beautifulsoup4   # ally.py
-pip install pikepdf                   # pdftree.py, textaccess.py
-pip install numpy                     # colors.py, harmony.py
-
-# recommended
-pip install pdfminer.six              # extractable-text checks in textaccess.py
-pip install pillow matplotlib tqdm    # visual outputs for colors.py and harmony.py
-```
-
-
 ## Quick start
 
-```bash
+```cli
 # audit webpage
 python ally.py https://example.com
 
