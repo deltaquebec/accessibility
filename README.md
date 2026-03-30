@@ -14,7 +14,7 @@ All outputs land in `./access_output/` with script-prefixed filenames. For redun
 | **colors.py** | perceptually distinct color palette generator |
 | **harmony.py** | color harmony palette generator (LCH and HSL) |
 
-While not technically an accessibility too, **harmony.py** is included here for completeness, since I often go back and forth with it and **colors.py** when deciding color schemes.
+While not technically an accessibility tool, **harmony.py** is included here for completeness, since I often go back and forth with it and **colors.py** when deciding color schemes.
 
 ## Quick start
 
