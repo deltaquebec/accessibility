@@ -85,7 +85,6 @@ python ally.py https://example.com
 python ally.py example.com          # https:// prepended automatically
 ```
 
----
 
 ### pdftree.py PDF structure tree
 
@@ -100,8 +99,6 @@ Extracts and visualizes the logical structure tree of a tagged PDF. Checks *what
 python pdftree.py document.pdf
 python pdftree.py document.pdf --json tree.json
 ```
-
----
 
 ### textaccess.py PDF text accessibility
 
@@ -122,8 +119,6 @@ Answers *whether a PDF's content is actually usable* by assistive technology. A 
 python textaccess.py document.pdf
 ```
 
----
-
 ### colors.py perceptually distinct color generator
 
 Generates a palette of $n$ colors by maximizing minimum pairwise CIEDE2000 \Delta E in CIELAB space. Supports color vision deficiency simulation (protanopia, deuteranopia, tritanopia), so palettes remain distinguishable across vision types. Anchor colors fix specific values while the algorithm fills remaining slots.
@@ -139,8 +134,6 @@ python colors.py 8 --cvd all
 python colors.py 8 --cvd all --contrast #1a1a1a -o my_palette
 python colors.py 6 --anchor "#003366" --anchor "#cc0000" --cvd all
 ```
-
----
 
 ### harmony.py color harmony palette
 
