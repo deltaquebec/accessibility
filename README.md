@@ -45,7 +45,7 @@ python harmony.py "#3498db"
 
 ### ally.py web accessibility
 
-NOTE: that is two letter <l>; technically, the reference is a11y, with eleven letters between <a> and <y> in accessibility. Here, we use the letter <l>, not the number <1>.
+NOTE: that is two letter l; technically, the reference is a11y, with eleven letters between a and y in accessibility. Here, we use the letter l, not the number 1.
 
 Fetches a URL and runs static checks against WCAG 2.1 Level A and AA criteria. Before checking, checks the page for conditions that degrade audit reliability: JS frameworks; sparse DOM; external stylesheets; iframes. Findings are grouped by severity with WCAG level tags. 
 
