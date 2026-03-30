@@ -101,7 +101,7 @@ Answers *whether a PDF's content is actually usable* by assistive technology. A 
 python textaccess.py document.pdf
 ```
 
-### colors.py perceptually distinct color generator
+### colors.py perceptually distinct colors
 
 Generates a palette of $n$ colors by maximizing minimum pairwise CIEDE2000 \Delta E in CIELAB space. Supports color vision deficiency simulation (protanopia, deuteranopia, tritanopia), so palettes remain distinguishable across vision types. Anchor colors fix specific values while the algorithm fills remaining slots.
 
