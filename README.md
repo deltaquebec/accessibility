@@ -1,7 +1,5 @@
 # Accessibility suite
 
-**Scripts for auditing web pages, PDF documents, and color palettes against accessibility standards**
-
 The accessibility suite is a collection of command-line Python scripts for catching accessibility failures. These are refactored scripts that I have been working on and using for many years now, and I wanted to make them available. The idea is to operate outside of a browser-based application, and operate on fetched HTML and parsed PDF internals through the command line.
 
 All outputs land in `./access_output/` with script-prefixed filenames. For redundancy, terminal output mirrors plain-text file output for archiving and diffing.
