@@ -40,6 +40,127 @@ except ImportError as e:
     _PDFMINER_ERR = str(e)
 
 
+# namespace uris (pdf 2.0, iso 32000-2)
+NS_PDF17  = "http://iso.org/pdf/ssn"
+NS_PDF20  = "http://iso.org/pdf2/ssn"
+NS_MATHML = "http://www.w3.org/1998/Math/MathML"
+
+# standard structure types, pdf 1.7 (classic default namespace)
+STANDARD_17 = {
+    "document", "part", "art", "sect", "div", "blockquote", "caption",
+    "toc", "toci", "index", "nonstruct", "private",
+    "p", "h", "h1", "h2", "h3", "h4", "h5", "h6",
+    "l", "li", "lbl", "lbody",
+    "table", "tr", "th", "td", "thead", "tbody", "tfoot",
+    "span", "quote", "note", "reference", "bibentry", "code",
+    "figure", "formula", "form",
+    "link", "annot", "ruby", "rb", "rt", "rp", "warichu", "wt", "wp",
+}
+
+# standard structure types, pdf 2.0 namespace; Hn is open-ended (h7, h8, ...)
+# and handled by _is_hn below
+STANDARD_20 = {
+    "document", "documentfragment", "part", "div", "aside", "nonstruct",
+    "p", "h", "title", "fenote", "sub", "lbl", "em", "strong", "span",
+    "l", "li", "lbody",
+    "table", "tr", "th", "td", "thead", "tbody", "tfoot", "caption",
+    "figure", "formula", "form", "artifact",
+    "link", "annot", "ruby", "rb", "rt", "rp", "warichu", "wt", "wp",
+    "index", "toc", "toci",
+}
+
+_HN_RE = re.compile(r"^h\d+$")
+
+
+def _is_hn(tag: str) -> bool:
+    return tag == "h" or bool(_HN_RE.match(tag))
+
+
+def _is_standard(tag: str, ns_uri) -> bool:
+    """standard type test relative to the element's (resolved) namespace"""
+    t = tag.lower()
+    if ns_uri == NS_MATHML:
+        return True
+    if ns_uri == NS_PDF20:
+        return t in STANDARD_20 or _is_hn(t)
+    # classic default namespace and explicit pdf 1.7 namespace
+    return t in STANDARD_17
+
+
+def _ns_uri(ns_obj):
+    """uri string of a namespace dictionary, or None"""
+    if isinstance(ns_obj, pikepdf.Dictionary) and "/NS" in ns_obj:
+        return str(ns_obj["/NS"])
+    return None
+
+
+def _build_role_maps(pdf):
+    """collect classic /RoleMap and pdf 2.0 per-namespace /RoleMapNS mappings
+
+    returns (classic, ns_maps):
+      classic: {name: name}, the pdf 1.x role map on the structure tree root
+      ns_maps: {namespace uri: {name: (target name, target namespace uri or None)}}
+        target namespace None means the default standard namespace
+    """
+    classic = {}
+    ns_maps = {}
+    root = pdf.Root
+    if "/StructTreeRoot" not in root:
+        return classic, ns_maps
+    st = root["/StructTreeRoot"]
+
+    rm = st.get("/RoleMap")
+    if isinstance(rm, pikepdf.Dictionary):
+        for k, v in rm.items():
+            classic[str(k).lstrip("/")] = str(v).lstrip("/")
+
+    namespaces = st.get("/Namespaces")
+    if isinstance(namespaces, pikepdf.Array):
+        for ns in namespaces:
+            if not isinstance(ns, pikepdf.Dictionary):
+                continue
+            uri = _ns_uri(ns)
+            if uri is None:
+                continue
+            mapping = {}
+            rmns = ns.get("/RoleMapNS")
+            if isinstance(rmns, pikepdf.Dictionary):
+                for k, v in rmns.items():
+                    name = str(k).lstrip("/")
+                    if isinstance(v, pikepdf.Array) and len(v) >= 1:
+                        target = str(v[0]).lstrip("/")
+                        tgt_uri = _ns_uri(v[1]) if len(v) > 1 else None
+                        mapping[name] = (target, tgt_uri)
+                    else:
+                        mapping[name] = (str(v).lstrip("/"), None)
+            ns_maps[uri] = mapping
+    return classic, ns_maps
+
+
+def _resolve_type(elem, classic, ns_maps):
+    """resolve an element's /S through role maps to (tag, namespace uri)
+
+    follows /RoleMapNS for namespaced elements and classic /RoleMap
+    otherwise, with a cycle guard; stops at the first standard type or
+    when no further mapping applies
+    """
+    tag = str(elem.get("/S", "")).lstrip("/")
+    ns_uri = _ns_uri(elem.get("/NS"))
+    seen = set()
+    while tag and not _is_standard(tag, ns_uri):
+        key = (tag, ns_uri)
+        if key in seen:
+            break
+        seen.add(key)
+        if ns_uri is not None and ns_uri in ns_maps and tag in ns_maps[ns_uri]:
+            tag, ns_uri = ns_maps[ns_uri][tag]
+        elif ns_uri is None and tag in classic:
+            tag = classic[tag]
+        else:
+            break
+    return tag, ns_uri
+
+
 def _extract_text(pdf_path: str) -> str:
     """extract all text from pdf using pdfminer lower-level api"""
     output = _io.StringIO()
@@ -104,6 +225,18 @@ def check_language(pdf, result):
         result.add("info", "language", f"document language: {str(lang).strip()}")
 
 
+def _xmp_dc_title(pdf) -> str:
+    """dc:title from xmp metadata, empty string if absent"""
+    try:
+        xmp = pdf.open_metadata()
+        v = xmp.get("{http://purl.org/dc/elements/1.1/}title", "")
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else ""
+        return str(v).strip()
+    except Exception:
+        return ""
+
+
 def check_metadata(pdf, result):
     """document info dict: pdf version, page count, encryption, font encoding"""
     info  = pdf.docinfo
@@ -125,8 +258,17 @@ def check_metadata(pdf, result):
     modified = get("/ModDate")
 
     if not title:
-        result.add("warning", "metadata: title",
-                   "no /Title: screen readers announce title when a document opens")
+        # pdf 2.0 deprecates the info dictionary; the authoritative title
+        # location is xmp dc:title, so consult it before warning
+        xmp_title = _xmp_dc_title(pdf)
+        if xmp_title:
+            result.add("info", "metadata: title",
+                       f"{xmp_title} (xmp dc:title; info dictionary /Title absent, "
+                       "deprecated in pdf 2.0)")
+        else:
+            result.add("warning", "metadata: title",
+                       "no /Title in info dictionary and no dc:title in xmp: "
+                       "screen readers announce title when a document opens")
     else:
         result.add("info", "metadata: title", title)
 
@@ -151,11 +293,11 @@ def check_metadata(pdf, result):
     # pdf version
     try:
         version = f"{pdf.pdf_version}"
-        # PDF/UA requires PDF 1.7 minimum
+        # PDF/UA-1 is defined over pdf 1.7; PDF/UA-2 over pdf 2.0
         major, minor = version.split(".")
         if int(major) < 1 or (int(major) == 1 and int(minor) < 7):
             result.add("warning", "pdf version",
-                       f"pdf {version}: PDF/UA requires version > 1.7")
+                       f"pdf {version}: PDF/UA requires pdf 1.7 (UA-1) or pdf 2.0 (UA-2)")
         else:
             result.add("info", "pdf version", f"pdf {version}")
     except Exception:
@@ -247,7 +389,6 @@ def check_metadata(pdf, result):
 
 def _parse_pdf_date(raw: str) -> str:
     """parse pdf date string (D:YYYYMMDDHHmmSS) -> readable form"""
-    import re
     s = raw.lstrip("D:").rstrip("Z").replace("'", "")
     m = re.match(r"(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?", s)
     if m:
@@ -322,8 +463,49 @@ def check_extractable_text(pdf_path, pdf, result):
     result.add("info", "extractable text", f'"{sample}"')
 
 
-def check_structure_inventory(pdf, result):
-    """walk structure tree; audit figures, tables, lists, headings, links, forms"""
+def _table_has_summary(elem) -> bool:
+    """table summary lives in the /A attribute object(s), not on the element;
+    accept the legacy direct key as well"""
+    if "/Summary" in elem:
+        return True
+    attrs = elem.get("/A")
+    if attrs is None:
+        return False
+    attr_list = list(attrs) if isinstance(attrs, pikepdf.Array) else [attrs]
+    for a in attr_list:
+        if isinstance(a, pikepdf.Dictionary) and "/Summary" in a:
+            return True
+    return False
+
+
+def _table_has_th(elem, classic, ns_maps, depth=0) -> bool:
+    """search for TH cells through THead/TBody/TFoot/TR nesting"""
+    if depth > 4 or not isinstance(elem, pikepdf.Dictionary):
+        return False
+    kids = elem.get("/K")
+    if kids is None:
+        return False
+    kid_list = list(kids) if isinstance(kids, pikepdf.Array) else [kids]
+    for kid in kid_list:
+        if not isinstance(kid, pikepdf.Dictionary):
+            continue
+        tag, _ = _resolve_type(kid, classic, ns_maps)
+        t = tag.lower()
+        if t == "th":
+            return True
+        if t in {"thead", "tbody", "tfoot", "tr"}:
+            if _table_has_th(kid, classic, ns_maps, depth + 1):
+                return True
+    return False
+
+
+def check_structure_inventory(pdf, result, classic, ns_maps):
+    """walk structure tree; audit figures, tables, lists, headings, links, forms
+
+    element types are resolved through /RoleMap and /RoleMapNS before
+    classification, so namespaced source types (e.g. latex 'section')
+    are counted under the standard types they map to
+    """
     if "/StructTreeRoot" not in pdf.Root:
         return
 
@@ -343,7 +525,8 @@ def check_structure_inventory(pdf, result):
             return
         s_type = elem.get("/S")
         if s_type:
-            tag = str(s_type).lstrip("/").lower()
+            resolved, _ = _resolve_type(elem, classic, ns_maps)
+            tag = resolved.lower()
 
             # figures
             if tag == "figure":
@@ -357,40 +540,28 @@ def check_structure_inventory(pdf, result):
             # tables
             elif tag == "table":
                 counts["table"]["total"] += 1
-                # look for a Summary attribute or Caption child
-                has_summary = "/Summary" in elem
-                has_caption = False
-                has_th = False
-                kids = elem.get("/K")
-                if kids:
-                    kid_list = list(kids) if isinstance(kids, pikepdf.Array) else [kids]
-                    for kid in kid_list:
-                        if isinstance(kid, pikepdf.Dictionary):
-                            kid_type = str(kid.get("/S", "")).lstrip("/").lower()
-                            if kid_type == "caption":
-                                has_caption = True
-                            if kid_type in {"th", "thead"}:
-                                has_th = True
-                            # descend one level to find TH inside TR
-                            if kid_type == "tr":
-                                tr_kids = kid.get("/K")
-                                if tr_kids:
-                                    tr_list = list(tr_kids) if isinstance(tr_kids, pikepdf.Array) else [tr_kids]
-                                    for cell in tr_list:
-                                        if isinstance(cell, pikepdf.Dictionary):
-                                            if str(cell.get("/S", "")).lstrip("/").lower() == "th":
-                                                has_th = True
-                if not has_summary and not has_caption:
-                    counts["table"]["missing_summary"] += 1
-                if not has_th:
+                if not _table_has_summary(elem):
+                    # a caption child also declares purpose
+                    has_caption = False
+                    kids = elem.get("/K")
+                    if kids:
+                        kid_list = list(kids) if isinstance(kids, pikepdf.Array) else [kids]
+                        for kid in kid_list:
+                            if isinstance(kid, pikepdf.Dictionary):
+                                kt, _ = _resolve_type(kid, classic, ns_maps)
+                                if kt.lower() == "caption":
+                                    has_caption = True
+                    if not has_caption:
+                        counts["table"]["missing_summary"] += 1
+                if not _table_has_th(elem, classic, ns_maps):
                     counts["table"]["missing_headers"] += 1
 
             # lists
             elif tag == "l":
                 counts["list"]["total"] += 1
 
-            # headings
-            elif tag in {"h", "h1", "h2", "h3", "h4", "h5", "h6"}:
+            # headings (pdf 2.0 allows Hn beyond h6)
+            elif _is_hn(tag):
                 counts["heading"]["total"] += 1
                 # note: with no actual-text and no children with text is empty
                 actual = elem.get("/ActualText")
@@ -549,32 +720,34 @@ def check_untagged_content(pdf, result):
                    "all pages with content appear to use marked content sequences")
 
 
-def check_structure_types(pdf, result):
-    """flag non-standard or role-mapped structure types that may confuse AT"""
+def check_structure_types(pdf, result, classic, ns_maps):
+    """flag structure types that remain non-standard after role map resolution
+
+    pdf 2.0 documents carry per-namespace role maps (/Namespaces with
+    /RoleMapNS); a type is only a problem if it resolves to nothing
+    standard through either mechanism
+    """
     if "/StructTreeRoot" not in pdf.Root:
         return
 
-    standard_types = {
-        "document", "part", "art", "sect", "div", "blockquote", "caption",
-        "toc", "toci", "index", "nonstruct", "private",
-        "p", "h", "h1", "h2", "h3", "h4", "h5", "h6",
-        "l", "li", "lbl", "lbody",
-        "table", "tr", "th", "td", "thead", "tbody", "tfoot",
-        "span", "quote", "note", "reference", "bibentry", "code",
-        "figure", "formula", "form",
-        "link", "annot", "ruby", "rb", "rt", "rp", "warichu", "wt", "wp",
-    }
-
-    nonstandard = set()
+    unresolved = set()
+    source_namespaces = set()
 
     def walk(elem):
         if not isinstance(elem, pikepdf.Dictionary):
             return
         s_type = elem.get("/S")
         if s_type:
-            tag = str(s_type).lstrip("/").lower()
-            if tag not in standard_types:
-                nonstandard.add(str(s_type).lstrip("/"))
+            uri = _ns_uri(elem.get("/NS"))
+            if uri:
+                source_namespaces.add(uri)
+            tag, final_uri = _resolve_type(elem, classic, ns_maps)
+            if not _is_standard(tag, final_uri):
+                origin = str(s_type).lstrip("/")
+                if uri:
+                    unresolved.add(f"{origin} ({uri})")
+                else:
+                    unresolved.add(origin)
         kids = elem.get("/K")
         if isinstance(kids, pikepdf.Array):
             for kid in kids:
@@ -592,13 +765,19 @@ def check_structure_types(pdf, result):
         elif isinstance(kids, pikepdf.Dictionary):
             walk(kids)
 
-    if nonstandard:
+    if source_namespaces:
+        result.add("info", "structure namespaces",
+                   f"structure element namespace(s): {', '.join(sorted(source_namespaces))}")
+
+    if unresolved:
         result.add("warning", "structure types",
-                   f"non-standard structure type(s) found: {', '.join(sorted(nonstandard))}; "
-                   "check that /RoleMap entries exist so AT can interpret them")
+                   f"structure type(s) not resolvable to standard types through "
+                   f"/RoleMap or /RoleMapNS: {', '.join(sorted(unresolved))}; "
+                   "AT cannot interpret these")
     else:
         result.add("info", "structure types",
-                   "all structure types are standard pdf/ua element types")
+                   "all structure types are standard or resolve to standard types "
+                   "through role maps")
 
 
 # report
@@ -667,10 +846,13 @@ if __name__ == "__main__":
             check_tagging(pdf, result)
             check_language(pdf, result)
             check_metadata(pdf, result)
-            check_structure_inventory(pdf, result)
+            classic, ns_maps = _build_role_maps(pdf)
+            check_structure_inventory(pdf, result, classic, ns_maps)
             check_untagged_content(pdf, result)
-            check_structure_types(pdf, result)
-        check_extractable_text(pdf_path, pdf, result)
+            check_structure_types(pdf, result, classic, ns_maps)
+            # inside the with block: check_extractable_text touches pdf.pages,
+            # which is invalid on a closed pdf
+            check_extractable_text(pdf_path, pdf, result)
     except pikepdf.PdfError as e:
         sys.exit(f"could not open pdf: {e}")
 
